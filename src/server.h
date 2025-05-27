@@ -1367,6 +1367,7 @@ typedef struct client {
     dictEntry *cur_script;  /* Cached pointer to the dictEntry of the script being executed. */
     time_t lastinteraction; /* Time of the last interaction, used for timeout */
     time_t obuf_soft_limit_reached_time;
+    mstime_t last_cron_check_time;    /* the last client check time in cron */
     int authenticated;      /* Needed when the default user requires auth. */
     int replstate;          /* Replication state if this is a slave. */
     int repl_start_cmd_stream_on_ack; /* Install slave write handler on first ACK. */
@@ -3576,6 +3577,12 @@ sds getConfigDebugInfo(void);
 int allowProtectedAction(int config, client *c);
 void initServerClientMemUsageBuckets(void);
 void freeServerClientMemUsageBuckets(void);
+
+#define CLIENTS_PEAK_MEM_USAGE_SLOTS 8
+#define CLIENTS_CRON_MIN_ITERATIONS 5
+#define IO_THREAD_CLIENTS_MAX_CHECK_TIME 200
+#define IO_THREAD_CRON_TIME 100
+int cronCheckAndFreeClient(client *c, int curr_peak_mem_usage_slot);
 
 /* Module Configuration */
 typedef struct ModuleConfig ModuleConfig;

@@ -392,6 +392,8 @@ int processClientsFromIOThread(IOThread *t) {
     if (processed == 0) return 0;
 
     listNode *node = NULL;
+    mstime_t now = server.mstime;
+    int curr_peak_mem_usage_slot = (now / 1000) % CLIENTS_PEAK_MEM_USAGE_SLOTS;
     while (listLength(mainThreadProcessingClients[t->id])) {
         /* Each time we pop up only the first client to process to guarantee
          * reentrancy safety. */
@@ -418,8 +420,15 @@ int processClientsFromIOThread(IOThread *t) {
             continue;
         }
 
-        /* Update the client in the mem usage */
-        updateClientMemUsageAndBucket(c);
+        if (c->last_cron_check_time + IO_THREAD_CLIENTS_MAX_CHECK_TIME < now) {
+            c->last_cron_check_time = now;
+            if (cronCheckAndFreeClient(c, curr_peak_mem_usage_slot)) {
+                continue;
+            }
+        } else {
+            /* Update the client in the mem usage */
+            updateClientMemUsageAndBucket(c);
+        }
 
         /* Process the pending command and input buffer. */
         if (!c->read_error && c->io_flags & CLIENT_IO_PENDING_COMMAND) {
@@ -502,6 +511,33 @@ int processClientsOfAllIOThreads(void) {
         processed += processClientsFromIOThread(&IOThreads[i]);
     }
     return processed;
+}
+
+/* Check whether threads in the iothread need to be checked by the main thread. */
+void IOThreadClientsCron(IOThread *t) {
+    mstime_t now = mstime();
+    int numclients = listLength(t->clients);
+    static int CHECK_FREQUENCY_PER_SECOND = 1000/IO_THREAD_CRON_TIME;
+    int iterations = numclients/CHECK_FREQUENCY_PER_SECOND;
+    /* Process at least a few clients while we are at it, even if we need
+     * to process less than CLIENTS_CRON_MIN_ITERATIONS to meet our contract
+     * of processing each client once per second. */
+    if (iterations < CLIENTS_CRON_MIN_ITERATIONS) {
+        iterations = CLIENTS_CRON_MIN_ITERATIONS;
+    }
+    listIter li;
+    listNode *ln;
+    listRewind(t->clients, &li);
+    while((ln = listNext(&li)) && iterations--) {
+        client *c = listNodeValue(ln);
+        /* Check for idle timeout first */
+        if (c->last_cron_check_time + IO_THREAD_CLIENTS_MAX_CHECK_TIME < now) {
+            enqueuePendingClientsToMainThread(c, 0);
+        } else {
+            /* If the first client doesn't meet the condition the next client will not meet either. */
+            break;
+        }
+    }
 }
 
 /* After the main thread processes the clients, it will send the clients back to
@@ -624,6 +660,22 @@ void IOThreadAfterSleep(struct aeEventLoop *el) {
     atomicSetWithSync(t->running, 1);
 }
 
+/* This is our io thread timer interrupt, called (1000/IO_THREAD_CRON_TIME) times per second.
+ * The current responsibility is to detect clients that have been stuck in the
+ * iothread for too long and hand them over to the main thread for handling. */
+
+ int ioThreadCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
+    UNUSED(eventLoop);
+    UNUSED(id);
+    IOThread *t = clientData;
+
+    if (listLength(t->clients) != 0) {
+        IOThreadClientsCron(t);
+    }
+    /* it checks every fixed 100ms. */
+    return IO_THREAD_CRON_TIME;
+ }
+
 /* The main function of IO thread, it will run an event loop. The mian thread
  * and IO thread will communicate through event notifier. */
 void *IOThreadMain(void *ptr) {
@@ -677,6 +729,13 @@ void initThreadedIO(void) {
                               AE_READABLE, handleClientsFromMainThread, t) != AE_OK)
         {
             serverLog(LL_WARNING, "Fatal: Can't register file event for IO thread notifications.");
+            exit(1);
+        }
+
+        /* This is the timer callback of the iothread, used to gradually handle 
+         * some background operations, such as client timeouts. */
+        if (aeCreateTimeEvent(t->el, 1, ioThreadCron, t, NULL) == AE_ERR) {
+            serverLog(LL_WARNING, "Fatal: Can't create event loop timers in IO thread.");
             exit(1);
         }
 

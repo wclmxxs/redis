@@ -935,7 +935,6 @@ int clientsCronResizeOutputBuffer(client *c, mstime_t now_ms) {
  *
  * When we want to know what was recently the peak memory usage, we just scan
  * such few slots searching for the maximum value. */
-#define CLIENTS_PEAK_MEM_USAGE_SLOTS 8
 size_t ClientsPeakMemInput[CLIENTS_PEAK_MEM_USAGE_SLOTS] = {0};
 size_t ClientsPeakMemOutput[CLIENTS_PEAK_MEM_USAGE_SLOTS] = {0};
 
@@ -1074,6 +1073,33 @@ void getExpansiveClientsInfo(size_t *in_usage, size_t *out_usage) {
     *out_usage = o;
 }
 
+/* Perform client timeout and memory checks. If the client times out and is freed,
+ * return non-zero value.  */
+int cronCheckAndFreeClient(client *c, int curr_peak_mem_usage_slot) {
+    mstime_t now = server.mstime;
+    /* The following functions do different service checks on the client.
+     * The protocol is that they return non-zero if the client was
+     * terminated. */
+    if (clientsCronHandleTimeout(c,now)) return 1;
+    if (clientsCronResizeQueryBuffer(c)) return 0;
+    if (clientsCronFreeArgvIfIdle(c)) return 0;
+    if (clientsCronResizeOutputBuffer(c,now)) return 0;
+
+    if (clientsCronTrackExpansiveClients(c, curr_peak_mem_usage_slot)) return 0;
+
+    /* Iterating all the clients in getMemoryOverheadData() is too slow and
+     * in turn would make the INFO command too slow. So we perform this
+     * computation incrementally and track the (not instantaneous but updated
+     * to the second) total memory used by clients using clientsCron() in
+     * a more incremental way (depending on server.hz).
+     * If client eviction is enabled, update the bucket as well. */
+    if (!updateClientMemUsageAndBucket(c))
+        updateClientMemoryUsage(c);
+
+    if (closeClientOnOutputBufferLimitReached(c, 0)) return 1;
+    return 0;
+}
+
 /* This function is called by serverCron() and is used in order to perform
  * operations on clients that are important to perform constantly. For instance
  * we use this function in order to disconnect clients after a timeout, including
@@ -1090,7 +1116,6 @@ void getExpansiveClientsInfo(size_t *in_usage, size_t *out_usage) {
  * of clients per second, turning this function into a source of latency.
  */
 #define CLIENTS_CRON_PAUSE_IOTHREAD 8
-#define CLIENTS_CRON_MIN_ITERATIONS 5
 void clientsCron(void) {
     /* Try to process at least numclients/server.hz of clients
      * per call. Since normally (if there are no big latency events) this
@@ -1098,7 +1123,6 @@ void clientsCron(void) {
      * process all the clients in 1 second. */
     int numclients = listLength(server.clients);
     int iterations = numclients/server.hz;
-    mstime_t now = mstime();
 
     /* Process at least a few clients while we are at it, even if we need
      * to process less than CLIENTS_CRON_MIN_ITERATIONS to meet our contract
@@ -1124,16 +1148,6 @@ void clientsCron(void) {
     ClientsPeakMemInput[zeroidx] = 0;
     ClientsPeakMemOutput[zeroidx] = 0;
 
-    /* Pause the IO threads that are processing clients, to let us access clients
-     * safely. In order to avoid increasing CPU usage by pausing all threads when
-     * there are too many io threads, we pause io threads in multiple batches. */
-    static int start = 1, end = 0;
-    if (server.io_threads_num >= 1 && listLength(server.clients) > 0) {
-        end = start + CLIENTS_CRON_PAUSE_IOTHREAD - 1;
-        if (end >= server.io_threads_num) end = server.io_threads_num - 1;
-        pauseIOThreadsRange(start, end);
-    }
-
     while(listLength(server.clients) && iterations--) {
         client *c;
         listNode *head;
@@ -1144,42 +1158,18 @@ void clientsCron(void) {
         c = listNodeValue(head);
         listRotateHeadToTail(server.clients);
 
-        if (c->running_tid != IOTHREAD_MAIN_THREAD_ID &&
-            !(c->running_tid >= start && c->running_tid <= end))
-        {
-            /* Skip clients that are being processed by the IO threads that
-             * are not paused. */
+        /*
+         * Only handle scenarios without iothread or isClientMustHandledByMainThread.
+         * When iothread is enabled, this proc does not operate. Instead, the 
+         * iothread first checks its own clients, followed by the main thread performing 
+         * subsequent processing. This workflow is primarily implemented 
+         * in processClientsFromIOThread and processClientsFromMainThread.
+         */
+        if (server.io_threads_num > 1 && !isClientMustHandledByMainThread(c)) {
             continue;
         }
 
-        /* The following functions do different service checks on the client.
-         * The protocol is that they return non-zero if the client was
-         * terminated. */
-        if (clientsCronHandleTimeout(c,now)) continue;
-        if (clientsCronResizeQueryBuffer(c)) continue;
-        if (clientsCronFreeArgvIfIdle(c)) continue;
-        if (clientsCronResizeOutputBuffer(c,now)) continue;
-
-        if (clientsCronTrackExpansiveClients(c, curr_peak_mem_usage_slot)) continue;
-
-        /* Iterating all the clients in getMemoryOverheadData() is too slow and
-         * in turn would make the INFO command too slow. So we perform this
-         * computation incrementally and track the (not instantaneous but updated
-         * to the second) total memory used by clients using clientsCron() in
-         * a more incremental way (depending on server.hz).
-         * If client eviction is enabled, update the bucket as well. */
-        if (!updateClientMemUsageAndBucket(c))
-            updateClientMemoryUsage(c);
-
-        if (closeClientOnOutputBufferLimitReached(c, 0)) continue;
-    }
-
-    /* Resume the IO threads that were paused */
-    if (end) {
-        resumeIOThreadsRange(start, end);
-        start = end + 1;
-        if (start >= server.io_threads_num) start = 1;
-        end = 0;
+        cronCheckAndFreeClient(c, curr_peak_mem_usage_slot);
     }
 }
 
