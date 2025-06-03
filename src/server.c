@@ -937,16 +937,17 @@ int clientsCronResizeOutputBuffer(client *c, mstime_t now_ms) {
  * such few slots searching for the maximum value. */
 size_t ClientsPeakMemInput[CLIENTS_PEAK_MEM_USAGE_SLOTS] = {0};
 size_t ClientsPeakMemOutput[CLIENTS_PEAK_MEM_USAGE_SLOTS] = {0};
+int CURR_PEAK_MEM_USAGE_SLOT = 0;
 
-int clientsCronTrackExpansiveClients(client *c, int time_idx) {
+int clientsCronTrackExpansiveClients(client *c) {
     size_t qb_size = c->querybuf ? sdsZmallocSize(c->querybuf) : 0;
     size_t argv_size = c->argv ? zmalloc_size(c->argv) : 0;
     size_t in_usage = qb_size + c->argv_len_sum + argv_size;
     size_t out_usage = getClientOutputBufferMemoryUsage(c);
 
     /* Track the biggest values observed so far in this slot. */
-    if (in_usage > ClientsPeakMemInput[time_idx]) ClientsPeakMemInput[time_idx] = in_usage;
-    if (out_usage > ClientsPeakMemOutput[time_idx]) ClientsPeakMemOutput[time_idx] = out_usage;
+    if (in_usage > ClientsPeakMemInput[CURR_PEAK_MEM_USAGE_SLOT]) ClientsPeakMemInput[CURR_PEAK_MEM_USAGE_SLOT] = in_usage;
+    if (out_usage > ClientsPeakMemOutput[CURR_PEAK_MEM_USAGE_SLOT]) ClientsPeakMemOutput[CURR_PEAK_MEM_USAGE_SLOT] = out_usage;
 
     return 0; /* This function never terminates the client. */
 }
@@ -1075,17 +1076,17 @@ void getExpansiveClientsInfo(size_t *in_usage, size_t *out_usage) {
 
 /* Perform client timeout and memory checks. If the client times out and is freed,
  * return non-zero value.  */
-int cronCheckAndFreeClient(client *c, int curr_peak_mem_usage_slot) {
+int clientsCronRunClient(client *c) {
     mstime_t now = server.mstime;
     /* The following functions do different service checks on the client.
      * The protocol is that they return non-zero if the client was
-     * terminated. */
+     * adjust. */
     if (clientsCronHandleTimeout(c,now)) return 1;
-    if (clientsCronResizeQueryBuffer(c)) return 0;
-    if (clientsCronFreeArgvIfIdle(c)) return 0;
-    if (clientsCronResizeOutputBuffer(c,now)) return 0;
+    if (clientsCronResizeQueryBuffer(c)) return 1;
+    if (clientsCronFreeArgvIfIdle(c)) return 1;
+    if (clientsCronResizeOutputBuffer(c,now)) return 1;
 
-    if (clientsCronTrackExpansiveClients(c, curr_peak_mem_usage_slot)) return 0;
+    if (clientsCronTrackExpansiveClients(c)) return 0;
 
     /* Iterating all the clients in getMemoryOverheadData() is too slow and
      * in turn would make the INFO command too slow. So we perform this
@@ -1115,7 +1116,6 @@ int cronCheckAndFreeClient(client *c, int curr_peak_mem_usage_slot) {
  * default server.hz value is 10, so sometimes here we need to process thousands
  * of clients per second, turning this function into a source of latency.
  */
-#define CLIENTS_CRON_PAUSE_IOTHREAD 8
 void clientsCron(void) {
     /* Try to process at least numclients/server.hz of clients
      * per call. Since normally (if there are no big latency events) this
@@ -1132,7 +1132,7 @@ void clientsCron(void) {
                      numclients : CLIENTS_CRON_MIN_ITERATIONS;
 
 
-    int curr_peak_mem_usage_slot = server.unixtime % CLIENTS_PEAK_MEM_USAGE_SLOTS;
+    CURR_PEAK_MEM_USAGE_SLOT = server.unixtime % CLIENTS_PEAK_MEM_USAGE_SLOTS;
     /* Always zero the next sample, so that when we switch to that second, we'll
      * only register samples that are greater in that second without considering
      * the history of such slot.
@@ -1144,7 +1144,7 @@ void clientsCron(void) {
      * than CLIENTS_PEAK_MEM_USAGE_SLOTS seconds: however this is not a problem
      * since here we want just to track if "recently" there were very expansive
      * clients from the POV of memory usage. */
-    int zeroidx = (curr_peak_mem_usage_slot+1) % CLIENTS_PEAK_MEM_USAGE_SLOTS;
+    int zeroidx = (CURR_PEAK_MEM_USAGE_SLOT+1) % CLIENTS_PEAK_MEM_USAGE_SLOTS;
     ClientsPeakMemInput[zeroidx] = 0;
     ClientsPeakMemOutput[zeroidx] = 0;
 
@@ -1158,18 +1158,10 @@ void clientsCron(void) {
         c = listNodeValue(head);
         listRotateHeadToTail(server.clients);
 
-        /*
-         * Only handle scenarios without iothread or isClientMustHandledByMainThread.
-         * When iothread is enabled, this proc does not operate. Instead, the 
-         * iothread first checks its own clients, followed by the main thread performing 
-         * subsequent processing. This workflow is primarily implemented 
-         * in processClientsFromIOThread and processClientsFromMainThread.
-         */
-        if (server.io_threads_num > 1 && !isClientMustHandledByMainThread(c)) {
-            continue;
-        }
+        /* Clients handled by IO threads will be processed by IOThreadClientsCron. */
+        if (c->tid != IOTHREAD_MAIN_THREAD_ID) continue;
 
-        cronCheckAndFreeClient(c, curr_peak_mem_usage_slot);
+        clientsCronRunClient(c);
     }
 }
 

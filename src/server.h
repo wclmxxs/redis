@@ -3582,7 +3582,7 @@ void freeServerClientMemUsageBuckets(void);
 #define CLIENTS_CRON_MIN_ITERATIONS 5
 #define IO_THREAD_CLIENTS_MAX_CHECK_TIME 200
 #define IO_THREAD_CRON_TIME 100
-int cronCheckAndFreeClient(client *c, int curr_peak_mem_usage_slot);
+int clientsCronRunClient(client *c);
 
 /* Module Configuration */
 typedef struct ModuleConfig ModuleConfig;

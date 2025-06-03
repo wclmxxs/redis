@@ -393,7 +393,6 @@ int processClientsFromIOThread(IOThread *t) {
 
     listNode *node = NULL;
     mstime_t now = server.mstime;
-    int curr_peak_mem_usage_slot = (now / 1000) % CLIENTS_PEAK_MEM_USAGE_SLOTS;
     while (listLength(mainThreadProcessingClients[t->id])) {
         /* Each time we pop up only the first client to process to guarantee
          * reentrancy safety. */
@@ -422,13 +421,12 @@ int processClientsFromIOThread(IOThread *t) {
 
         if (c->last_cron_check_time + IO_THREAD_CLIENTS_MAX_CHECK_TIME < now) {
             c->last_cron_check_time = now;
-            if (cronCheckAndFreeClient(c, curr_peak_mem_usage_slot)) {
+            if (clientsCronRunClient(c)) {
                 continue;
             }
-        } else {
-            /* Update the client in the mem usage */
-            updateClientMemUsageAndBucket(c);
         }
+        /* Update the client in the mem usage */
+        updateClientMemUsageAndBucket(c);
 
         /* Process the pending command and input buffer. */
         if (!c->read_error && c->io_flags & CLIENT_IO_PENDING_COMMAND) {
@@ -664,14 +662,12 @@ void IOThreadAfterSleep(struct aeEventLoop *el) {
  * The current responsibility is to detect clients that have been stuck in the
  * iothread for too long and hand them over to the main thread for handling. */
 
- int ioThreadCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
+ int IOThreadCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     UNUSED(eventLoop);
     UNUSED(id);
     IOThread *t = clientData;
 
-    if (listLength(t->clients) != 0) {
-        IOThreadClientsCron(t);
-    }
+    IOThreadClientsCron(t);
     /* it checks every fixed 100ms. */
     return IO_THREAD_CRON_TIME;
  }
@@ -732,9 +728,9 @@ void initThreadedIO(void) {
             exit(1);
         }
 
-        /* This is the timer callback of the iothread, used to gradually handle 
-         * some background operations, such as client timeouts. */
-        if (aeCreateTimeEvent(t->el, 1, ioThreadCron, t, NULL) == AE_ERR) {
+        /* This is the timer callback of the IO thread, used to gradually handle 
+         * some background operations, such as clients cron. */
+        if (aeCreateTimeEvent(t->el, 1, IOThreadCron, t, NULL) == AE_ERR) {
             serverLog(LL_WARNING, "Fatal: Can't create event loop timers in IO thread.");
             exit(1);
         }
