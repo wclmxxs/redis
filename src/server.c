@@ -937,7 +937,7 @@ int clientsCronResizeOutputBuffer(client *c, mstime_t now_ms) {
  * such few slots searching for the maximum value. */
 size_t ClientsPeakMemInput[CLIENTS_PEAK_MEM_USAGE_SLOTS] = {0};
 size_t ClientsPeakMemOutput[CLIENTS_PEAK_MEM_USAGE_SLOTS] = {0};
-int CURR_PEAK_MEM_USAGE_SLOT = 0;
+int CurrentPeakMemUsageSlot = 0;
 
 int clientsCronTrackExpansiveClients(client *c) {
     size_t qb_size = c->querybuf ? sdsZmallocSize(c->querybuf) : 0;
@@ -946,8 +946,8 @@ int clientsCronTrackExpansiveClients(client *c) {
     size_t out_usage = getClientOutputBufferMemoryUsage(c);
 
     /* Track the biggest values observed so far in this slot. */
-    if (in_usage > ClientsPeakMemInput[CURR_PEAK_MEM_USAGE_SLOT]) ClientsPeakMemInput[CURR_PEAK_MEM_USAGE_SLOT] = in_usage;
-    if (out_usage > ClientsPeakMemOutput[CURR_PEAK_MEM_USAGE_SLOT]) ClientsPeakMemOutput[CURR_PEAK_MEM_USAGE_SLOT] = out_usage;
+    if (in_usage > ClientsPeakMemInput[CurrentPeakMemUsageSlot]) ClientsPeakMemInput[CurrentPeakMemUsageSlot] = in_usage;
+    if (out_usage > ClientsPeakMemOutput[CurrentPeakMemUsageSlot]) ClientsPeakMemOutput[CurrentPeakMemUsageSlot] = out_usage;
 
     return 0; /* This function never terminates the client. */
 }
@@ -1132,7 +1132,7 @@ void clientsCron(void) {
                      numclients : CLIENTS_CRON_MIN_ITERATIONS;
 
 
-    CURR_PEAK_MEM_USAGE_SLOT = server.unixtime % CLIENTS_PEAK_MEM_USAGE_SLOTS;
+    CurrentPeakMemUsageSlot = server.unixtime % CLIENTS_PEAK_MEM_USAGE_SLOTS;
     /* Always zero the next sample, so that when we switch to that second, we'll
      * only register samples that are greater in that second without considering
      * the history of such slot.
@@ -1144,7 +1144,7 @@ void clientsCron(void) {
      * than CLIENTS_PEAK_MEM_USAGE_SLOTS seconds: however this is not a problem
      * since here we want just to track if "recently" there were very expansive
      * clients from the POV of memory usage. */
-    int zeroidx = (CURR_PEAK_MEM_USAGE_SLOT+1) % CLIENTS_PEAK_MEM_USAGE_SLOTS;
+    int zeroidx = (CurrentPeakMemUsageSlot+1) % CLIENTS_PEAK_MEM_USAGE_SLOTS;
     ClientsPeakMemInput[zeroidx] = 0;
     ClientsPeakMemOutput[zeroidx] = 0;
 
