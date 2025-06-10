@@ -392,7 +392,6 @@ int processClientsFromIOThread(IOThread *t) {
     if (processed == 0) return 0;
 
     listNode *node = NULL;
-    mstime_t now = server.mstime;
     while (listLength(mainThreadProcessingClients[t->id])) {
         /* Each time we pop up only the first client to process to guarantee
          * reentrancy safety. */
@@ -419,8 +418,8 @@ int processClientsFromIOThread(IOThread *t) {
             continue;
         }
 
-        if (c->last_cron_check_time + IO_THREAD_CLIENTS_MAX_CHECK_TIME < now) {
-            c->last_cron_check_time = now;
+        if (c->last_cron_check_time + IO_THREAD_CLIENTS_MAX_CHECK_TIME < server.mstime) {
+            c->last_cron_check_time = server.mstime;
             if (clientsCronRunClient(c)) {
                 continue;
             }
