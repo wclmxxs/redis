@@ -418,12 +418,14 @@ int processClientsFromIOThread(IOThread *t) {
             continue;
         }
 
-        if (c->last_cron_check_time + IO_THREAD_CLIENTS_MAX_CHECK_TIME < server.mstime) {
+        /* Run cron task for the client per second */
+        if (c->last_cron_check_time + 1000 <= server.mstime) {
             c->last_cron_check_time = server.mstime;
             if (clientsCronRunClient(c)) {
                 continue;
             }
         }
+
         /* Update the client in the mem usage */
         updateClientMemUsageAndBucket(c);
 
@@ -508,33 +510,6 @@ int processClientsOfAllIOThreads(void) {
         processed += processClientsFromIOThread(&IOThreads[i]);
     }
     return processed;
-}
-
-/* Check whether threads in the iothread need to be checked by the main thread. */
-void IOThreadClientsCron(IOThread *t) {
-    mstime_t now = mstime();
-    int numclients = listLength(t->clients);
-    static int CHECK_FREQUENCY_PER_SECOND = 1000/IO_THREAD_CRON_TIME;
-    int iterations = numclients/CHECK_FREQUENCY_PER_SECOND;
-    /* Process at least a few clients while we are at it, even if we need
-     * to process less than CLIENTS_CRON_MIN_ITERATIONS to meet our contract
-     * of processing each client once per second. */
-    if (iterations < CLIENTS_CRON_MIN_ITERATIONS) {
-        iterations = CLIENTS_CRON_MIN_ITERATIONS;
-    }
-    listIter li;
-    listNode *ln;
-    listRewind(t->clients, &li);
-    while((ln = listNext(&li)) && iterations--) {
-        client *c = listNodeValue(ln);
-        /* Check for idle timeout first */
-        if (c->last_cron_check_time + IO_THREAD_CLIENTS_MAX_CHECK_TIME < now) {
-            enqueuePendingClientsToMainThread(c, 0);
-        } else {
-            /* If the first client doesn't meet the condition the next client will not meet either. */
-            break;
-        }
-    }
 }
 
 /* After the main thread processes the clients, it will send the clients back to
@@ -657,19 +632,38 @@ void IOThreadAfterSleep(struct aeEventLoop *el) {
     atomicSetWithSync(t->running, 1);
 }
 
-/* This is our io thread timer interrupt, called (1000/IO_THREAD_CRON_TIME) times per second.
- * The current responsibility is to detect clients that have been stuck in the
- * iothread for too long and hand them over to the main thread for handling. */
+/* Periodically transfer part of clients to the main thread for processing. */
+void IOThreadClientsCron(IOThread *t) {
+    /* Process at least a few clients while we are at it, even if we need
+     * to process less than CLIENTS_CRON_MIN_ITERATIONS to meet our contract
+     * of processing each client once per second. */
+    int iterations = listLength(t->clients) / CONFIG_DEFAULT_HZ;
+    if (iterations < CLIENTS_CRON_MIN_ITERATIONS) {
+        iterations = CLIENTS_CRON_MIN_ITERATIONS;
+    }
 
- int IOThreadCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
+    listIter li;
+    listNode *ln;
+    listRewind(t->clients, &li);
+    while ((ln = listNext(&li)) && iterations--) {
+        client *c = listNodeValue(ln);
+        enqueuePendingClientsToMainThread(c, 0);
+    }
+}
+
+/* This is the IO thread timer interrupt, CONFIG_DEFAULT_HZ times per second.
+ * The current responsibility is to detect clients that have been stuck in the
+ * IO thread for too long and hand them over to the main thread for handling. */
+int IOThreadCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     UNUSED(eventLoop);
     UNUSED(id);
     IOThread *t = clientData;
 
+    /* Run cron tasks for the clients in the IO thread. */
     IOThreadClientsCron(t);
-    /* it checks every fixed 100ms. */
-    return IO_THREAD_CRON_TIME;
- }
+
+    return 1000/CONFIG_DEFAULT_HZ;
+}
 
 /* The main function of IO thread, it will run an event loop. The mian thread
  * and IO thread will communicate through event notifier. */

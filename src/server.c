@@ -935,6 +935,7 @@ int clientsCronResizeOutputBuffer(client *c, mstime_t now_ms) {
  *
  * When we want to know what was recently the peak memory usage, we just scan
  * such few slots searching for the maximum value. */
+#define CLIENTS_PEAK_MEM_USAGE_SLOTS 8
 size_t ClientsPeakMemInput[CLIENTS_PEAK_MEM_USAGE_SLOTS] = {0};
 size_t ClientsPeakMemOutput[CLIENTS_PEAK_MEM_USAGE_SLOTS] = {0};
 int CurrentPeakMemUsageSlot = 0;
@@ -946,8 +947,10 @@ int clientsCronTrackExpansiveClients(client *c) {
     size_t out_usage = getClientOutputBufferMemoryUsage(c);
 
     /* Track the biggest values observed so far in this slot. */
-    if (in_usage > ClientsPeakMemInput[CurrentPeakMemUsageSlot]) ClientsPeakMemInput[CurrentPeakMemUsageSlot] = in_usage;
-    if (out_usage > ClientsPeakMemOutput[CurrentPeakMemUsageSlot]) ClientsPeakMemOutput[CurrentPeakMemUsageSlot] = out_usage;
+    if (in_usage > ClientsPeakMemInput[CurrentPeakMemUsageSlot])
+        ClientsPeakMemInput[CurrentPeakMemUsageSlot] = in_usage;
+    if (out_usage > ClientsPeakMemOutput[CurrentPeakMemUsageSlot])
+        ClientsPeakMemOutput[CurrentPeakMemUsageSlot] = out_usage;
 
     return 0; /* This function never terminates the client. */
 }
@@ -1074,19 +1077,19 @@ void getExpansiveClientsInfo(size_t *in_usage, size_t *out_usage) {
     *out_usage = o;
 }
 
-/* Perform client timeout and memory checks. If the client times out and is freed,
- * return non-zero value.  */
+/* Run cron tasks for a single client. Return 1 if the client should
+ * be terminated, 0 otherwise. */
 int clientsCronRunClient(client *c) {
     mstime_t now = server.mstime;
     /* The following functions do different service checks on the client.
      * The protocol is that they return non-zero if the client was
-     * adjust. */
+     * terminated. */
     if (clientsCronHandleTimeout(c,now)) return 1;
     if (clientsCronResizeQueryBuffer(c)) return 1;
     if (clientsCronFreeArgvIfIdle(c)) return 1;
     if (clientsCronResizeOutputBuffer(c,now)) return 1;
 
-    if (clientsCronTrackExpansiveClients(c)) return 0;
+    if (clientsCronTrackExpansiveClients(c)) return 1;
 
     /* Iterating all the clients in getMemoryOverheadData() is too slow and
      * in turn would make the INFO command too slow. So we perform this

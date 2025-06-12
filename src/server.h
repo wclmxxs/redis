@@ -148,6 +148,7 @@ struct hdr_histogram;
 #define CONFIG_MIN_RESERVED_FDS 32
 #define CONFIG_DEFAULT_PROC_TITLE_TEMPLATE "{title} {listen-addr} {server-mode}"
 #define INCREMENTAL_REHASHING_THRESHOLD_US 1000
+#define CLIENTS_CRON_MIN_ITERATIONS 5
 
 /* Bucket sizes for client eviction pools. Each bucket stores clients with
  * memory usage of up to twice the size of the bucket below it. */
@@ -221,6 +222,8 @@ extern int configOOMScoreAdjValuesDefaults[CONFIG_OOM_COUNT];
  * the main thread always does IO work, so we can consider that the main thread
  * is the io thread 0. */
 #define IOTHREAD_MAIN_THREAD_ID 0
+
+
 
 /* Command flags. Please check the definition of struct redisCommand in this file
  * for more information about the meaning of every flag. */
@@ -1367,7 +1370,7 @@ typedef struct client {
     dictEntry *cur_script;  /* Cached pointer to the dictEntry of the script being executed. */
     time_t lastinteraction; /* Time of the last interaction, used for timeout */
     time_t obuf_soft_limit_reached_time;
-    mstime_t last_cron_check_time;    /* the last client check time in cron */
+    mstime_t last_cron_check_time;    /* The last client check time in cron */
     int authenticated;      /* Needed when the default user requires auth. */
     int replstate;          /* Replication state if this is a slave. */
     int repl_start_cmd_stream_on_ack; /* Install slave write handler on first ACK. */
@@ -3384,6 +3387,7 @@ robj *activeDefragStringOb(robj* ob);
 void dismissSds(sds s);
 void dismissMemory(void* ptr, size_t size_hint);
 void dismissMemoryInChild(void);
+int clientsCronRunClient(client *c);
 
 #define RESTART_SERVER_NONE 0
 #define RESTART_SERVER_GRACEFULLY (1<<0)     /* Do proper shutdown. */
@@ -3577,12 +3581,6 @@ sds getConfigDebugInfo(void);
 int allowProtectedAction(int config, client *c);
 void initServerClientMemUsageBuckets(void);
 void freeServerClientMemUsageBuckets(void);
-
-#define CLIENTS_PEAK_MEM_USAGE_SLOTS 8
-#define CLIENTS_CRON_MIN_ITERATIONS 5
-#define IO_THREAD_CLIENTS_MAX_CHECK_TIME 200
-#define IO_THREAD_CRON_TIME 100
-int clientsCronRunClient(client *c);
 
 /* Module Configuration */
 typedef struct ModuleConfig ModuleConfig;
