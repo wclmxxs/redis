@@ -223,8 +223,6 @@ extern int configOOMScoreAdjValuesDefaults[CONFIG_OOM_COUNT];
  * is the io thread 0. */
 #define IOTHREAD_MAIN_THREAD_ID 0
 
-
-
 /* Command flags. Please check the definition of struct redisCommand in this file
  * for more information about the meaning of every flag. */
 #define CMD_WRITE (1ULL<<0)
