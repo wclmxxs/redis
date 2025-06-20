@@ -334,3 +334,44 @@ start_server {config "minimal.conf" tags {"external:skip"} overrides {enable-deb
         }
     }
 }
+
+start_server {tags {"timeout external:skip"}} {
+    test {Multiple clients idle timeout test} {
+        # set client timeout to 1 second
+        r config set timeout 1
+
+        # create multiple client connections
+        set clients {}
+        set num_clients 10
+
+        for {set i 0} {$i < $num_clients} {incr i} {
+            set client [redis_deferring_client]
+            $client ping
+            assert_equal "PONG" [$client read]
+            lappend clients $client
+        }
+        assert_equal [llength $clients] $num_clients
+
+        # wait for 2.5 seconds
+        after 2500
+
+        # try to send commands to all clients - they should all fail due to timeout
+        set disconnected_count 0
+        foreach client $clients {
+            $client ping
+            if {[catch {$client read} err]} {
+                incr disconnected_count
+                # expected error patterns for connection timeout
+                assert_match {*I/O error*} $err
+            }
+            catch {$client close}
+        }
+
+        # all clients should have been disconnected due to timeout
+        assert_equal $disconnected_count $num_clients
+
+        # redis server still works well
+        reconnect
+        assert_equal "PONG" [r ping]
+    }
+}
