@@ -452,12 +452,12 @@ int processClientsFromIOThread(IOThread *t) {
             continue;
         }
 
-        /* Run cron task for the client per second */
-        if (c->last_cron_check_time + 1000 <= server.mstime) {
+        /* Run cron task for the client per second or it is marked as pending cron. */
+        if (c->last_cron_check_time + 1000 <= server.mstime ||
+            c->io_flags & CLIENT_IO_PENDING_CRON)
+        {
             c->last_cron_check_time = server.mstime;
-            if (clientsCronRunClient(c)) {
-                continue;
-            }
+            if (clientsCronRunClient(c)) continue;
         }
 
         /* Update the client in the mem usage */
@@ -602,7 +602,7 @@ int processClientsFromMainThread(IOThread *t) {
 
         /* Enable read and write and reset some flags. */
         c->io_flags |= CLIENT_IO_READ_ENABLED | CLIENT_IO_WRITE_ENABLED;
-        c->io_flags &= ~CLIENT_IO_PENDING_COMMAND;
+        c->io_flags &= ~(CLIENT_IO_PENDING_COMMAND | CLIENT_IO_PENDING_CRON);
 
         /* Only bind once, we never remove read handler unless freeing client. */
         if (!connHasEventLoop(c->conn)) {
@@ -681,6 +681,7 @@ void IOThreadClientsCron(IOThread *t) {
     listRewind(t->clients, &li);
     while ((ln = listNext(&li)) && iterations--) {
         client *c = listNodeValue(ln);
+        c->io_flags |= CLIENT_IO_PENDING_CRON;
         enqueuePendingClientsToMainThread(c, 0);
     }
 }
