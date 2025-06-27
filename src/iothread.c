@@ -458,10 +458,11 @@ int processClientsFromIOThread(IOThread *t) {
         {
             c->last_cron_check_time = server.mstime;
             if (clientsCronRunClient(c)) continue;
+        } else {
+            /* Update the client in the mem usage if clientsCronRunClient is not
+             * being called, since that function already performs the update. */
+            updateClientMemUsageAndBucket(c);
         }
-
-        /* Update the client in the mem usage */
-        updateClientMemUsageAndBucket(c);
 
         /* Process the pending command and input buffer. */
         if (!c->read_error && c->io_flags & CLIENT_IO_PENDING_COMMAND) {
